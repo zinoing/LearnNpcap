@@ -7,12 +7,12 @@
 #endif
 
 #include <pcap.h>
+#include <stdio.h>
+#include <time.h>
+
 #pragma comment(lib, "wpcap")
 #pragma comment(lib, "ws2_32.lib")
 
-#include <stdio.h>
-#include <time.h>
-#ifdef _WIN32
 #include <tchar.h>
 #include <winsock.h>
 
@@ -24,6 +24,19 @@ typedef struct EtherHeader {
 	unsigned short type;
 } EtherHeader;
 #pragma pack(pop) // 이전의 정렬 방식으로 복원
+
+typedef struct IpHeader {
+	unsigned char verIhl;
+	unsigned char tos;
+	unsigned short legnth;
+	unsigned short id;
+	unsigned short fragOffset;
+	unsigned char ttl;
+	unsigned char protocol;
+	unsigned short checksum;
+	unsigned char srcIp[4];
+	unsigned char dstIp[4];
+} IpHeader;
 
 BOOL LoadNpcapDlls()
 {
@@ -41,7 +54,6 @@ BOOL LoadNpcapDlls()
 	}
 	return TRUE;
 }
-#endif
 
 /* prototype of the packet handler */
 void packet_handler(u_char* param, const struct pcap_pkthdr* header, const u_char* pkt_data);
@@ -55,14 +67,12 @@ int main()
 	pcap_t* adhandle;
 	char errbuf[PCAP_ERRBUF_SIZE];
 
-#ifdef _WIN32
 	/* Load Npcap and its functions. */
 	if (!LoadNpcapDlls())
 	{
 		fprintf(stderr, "Couldn't load Npcap\n");
 		exit(1);
 	}
-#endif
 
 	/* Retrieve the device list */
 	/*
@@ -152,7 +162,11 @@ void packet_handler(u_char* param, const struct pcap_pkthdr* header, const u_cha
 	strftime(timestr, sizeof timestr, "%H:%M:%S", ltime);
 
 	EtherHeader* pEther = (EtherHeader*)pkt_data; // 강제 형변환
-	printf("%s,%.6d len:%-5d, " // 헤더의 최대 길이는 기본적으로 1514 바이트이다. 그러나 이보다 크게 출력이 될 수도 있는데 이는 NIC 옵션으로 NPU를 사용했기 때문이다.
+
+	if (ntohs(pEther->type) != 0x0800) // IP 프로토콜이 IPv4인 것만 분석하도록 함
+		return;
+
+	printf("%s,%.6d len:%-5d, " // 이더넷 헤더의 최대 길이는 기본적으로 1514 바이트이다. 그러나 이보다 크게 출력이 될 수도 있는데 이는 NIC 옵션으로 NPU를 사용했기 때문이다.
 		"SRC: %02X-%02X-%02X-%02X-%02X-%02X -> " // 출발지 MAC의 주소는 6바이트의 고정 크기를 가지고 있어, 이를 다음과 같이 16진수로 표현 가능하다. 
 		"DST: %02X-%02X-%02X-%02X-%02X-%02X " // 도착지 MAC의 주소도 위와 동일한 특징을 지니고 있다.
 		"type: %04X\n", // type의 경우는 2바이트의 크기를 지니고 있어 04X로 표현한다.	0800일 경우 IPV4이고 0806은 ARP를 뜻한다.
@@ -162,4 +176,27 @@ void packet_handler(u_char* param, const struct pcap_pkthdr* header, const u_cha
 		pEther->dstMax[0], pEther->dstMax[1], pEther->dstMax[2], 
 		pEther->dstMax[3], pEther->dstMax[4], pEther->dstMax[5],
 		ntohs(pEther->type)); // Intel CPU는 기본적으로 little endian 방식을 채택하고 있어 이를 big endian을 little endian 방식으로 바꾸어줄 함수 ntohs()를 사용한다.
+
+	IpHeader* pIpHeader = (EtherHeader*)(pkt_data + sizeof(EtherHeader));
+	printf("Ipv%d, IHL: %d, Total length: %d\n",
+		(pIpHeader->verIhl & 0xF0) >> 4,
+		(pIpHeader->verIhl & 0x0F) * 4, // IHL 필드는 IP 헤더의 길이를 32비트(4바이트) 워드 단위로 표현하기 때문에 4를 곱한다
+		ntohs(pIpHeader->legnth)); // total length도 앞선 type과 마찬가지로 네트워크 순서를 주의한다.
+
+	if (pIpHeader->fragOffset & ntohs((short)0x2000) || // ntohs((short)0x2000)일 경우 0x0020으로 00000000 00100000
+		ntohs(pIpHeader->fragOffset & (unsigned short)0xFF1F) > 0)
+	{
+		printf("ID: %04X, Flags: %04X, Offset:%d, Protocol: 0x%02X\n",
+			ntohs(pIpHeader->id),
+			ntohs(pIpHeader->fragOffset & ntohs((short)0xE000)),
+			ntohs(pIpHeader->fragOffset & ((unsigned short)0xFF1F)) * 8,
+			pIpHeader->protocol);
+
+		printf("%d.%d.%d.%d -> %d.%d.%d.%d\n",
+			pIpHeader->srcIp[0], pIpHeader->srcIp[1],
+			pIpHeader->srcIp[2], pIpHeader->srcIp[3],
+			pIpHeader->dstIp[0], pIpHeader->dstIp[1],
+			pIpHeader->dstIp[2], pIpHeader->dstIp[3]
+			);
+	}
 }

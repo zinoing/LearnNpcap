@@ -1,2 +1,3 @@
 ﻿  basic_dump.c
+C:\Users\zino\Desktop\LearnNpcap\basic_dump\basic_dump\basic_dump.c(180,12): warning C4133: 'initializing': incompatible types - from 'EtherHeader *' to 'IpHeader *'
   basic_dump.vcxproj -> C:\Users\zino\Desktop\LearnNpcap\basic_dump\x64\Debug\basic_dump.exe

@@ -27,7 +27,7 @@ typedef struct EtherHeader {
 typedef struct IpHeader {
 	unsigned char verIhl;
 	unsigned char tos;
-	unsigned short legnth;
+	unsigned short length;
 	unsigned short id;
 	unsigned short fragOffset;
 	unsigned char ttl;
@@ -48,6 +48,21 @@ typedef struct TcpHeader {
 	unsigned short checksum;
 	unsigned short urgent;
 } TcpHeader;
+
+typedef struct UdpHeader {
+	unsigned short srcPort;
+	unsigned short dstPort;
+	unsigned short length;
+	unsigned short checksum;
+} UdpHeader;
+
+typedef struct PseudoHeader {
+	unsigned int srcIp;
+	unsigned int dstIp;
+	unsigned char zero;
+	unsigned char protocol;
+	unsigned short length;
+} PseudoHeader;
 #pragma pack(pop)// 이전의 정렬 방식으로 복원
 
 BOOL LoadNpcapDlls()
@@ -69,6 +84,79 @@ BOOL LoadNpcapDlls()
 
 /* prototype of the packet handler */
 void packet_handler(u_char* param, const struct pcap_pkthdr* header, const u_char* pkt_data);
+
+unsigned short CalcChecksumIp(IpHeader* pIpHeader) {
+	unsigned char ihl = (pIpHeader->verIhl & 0x0F) << 2; // ihl의 길이 계산
+	unsigned short wData[30] = { 0 };
+	unsigned int dwSum = 0;
+
+	memcpy(wData, (BYTE*)pIpHeader, ihl); // 헤더 값을 복사
+
+	for (int i = 0; i < ihl / 2; i++)
+	{
+		if (i != 5) // i == 5일 때가 checksum field이다.
+			dwSum += wData[i];
+
+		if (dwSum & 0xFFFF0000) // checksum 값이 32이상이 되었을 경우
+		{
+			dwSum &= 0x0000FFFF; // checksum 값을 32 미만으로 잘라낸 후 더한다.
+			dwSum++;
+		}
+	}
+
+	return ~(dwSum & 0x0000FFFF);
+}
+
+unsigned short CalcChecksumUdp(IpHeader* pIpHeader,
+	UdpHeader* pUdpHeader)
+{
+	PseudoHeader	pseudoHeader = { 0 };
+	unsigned short* pwPseudoHeader = (unsigned short*)&pseudoHeader;
+	unsigned short* pwDatagram = (unsigned short*)pUdpHeader;
+	int				nPseudoHeaderSize = 6; //WORD 6개 배열
+	int				nDatagramSize = 0; //헤더 포함 데이터그램 크기
+
+	UINT32			dwSum = 0;
+	int				nLengthOfArray = 0;
+
+
+	pseudoHeader.srcIp = *(unsigned int*)pIpHeader->srcIp;
+	pseudoHeader.dstIp = *(unsigned int*)pIpHeader->dstIp;
+	pseudoHeader.zero = 0;
+	pseudoHeader.protocol = 17;
+	pseudoHeader.length = pUdpHeader->length;
+
+	nDatagramSize = ntohs(pseudoHeader.length);
+
+	if (nDatagramSize % 2)
+		nLengthOfArray = nDatagramSize / 2 + 1;
+	else
+		nLengthOfArray = nDatagramSize / 2;
+
+	for (int i = 0; i < nPseudoHeaderSize; i++)
+	{
+		dwSum += pwPseudoHeader[i];
+		if (dwSum & 0xFFFF0000)
+		{
+			dwSum &= 0x0000FFFF;
+			dwSum++;
+		}
+	}
+
+	//((UdpHeader*)wData)->checksum = 0x0000;
+	for (int i = 0; i < nLengthOfArray; i++)
+	{
+		if (i != 3)
+			dwSum += pwDatagram[i];
+		if (dwSum & 0xFFFF0000)
+		{
+			dwSum &= 0x0000FFFF;
+			dwSum++;
+		}
+	}
+
+	return (USHORT)~(dwSum & 0x0000FFFF);
+}
 
 int main()
 {
@@ -194,13 +282,13 @@ void packet_handler(u_char* param, const struct pcap_pkthdr* header, const u_cha
 	if (pIpHeader->protocol != 6) // IP 프로토콜이 6인 것만 분석하도록 함
 		return;
 
-	int ipLen = (pIpHeader->legnth & 0x0F) * 4;
+	int ipLen = (pIpHeader->length & 0x0F) * 4;
 	TcpHeader* pTcpHeader = (TcpHeader*)(pkt_data + sizeof(EtherHeader) + ipLen);
 
 	printf("Ipv%d, IHL: %d, Total length: %d\n",
 		(pIpHeader->verIhl & 0xF0) >> 4,
 		(pIpHeader->verIhl & 0x0F) * 4, // IHL 필드는 IP 헤더의 길이를 32비트(4바이트) 워드 단위로 표현하기 때문에 4를 곱한다
-		ntohs(pIpHeader->legnth)); // total length도 앞선 type과 마찬가지로 네트워크 순서를 주의한다.
+		ntohs(pIpHeader->length)); // total length도 앞선 type과 마찬가지로 네트워크 순서를 주의한다.
 
 	if (pIpHeader->fragOffset & htons((short)0x2000) || // htons((short)0x2000)일 경우 0x0020으로 00100000 00000000
 		ntohs(pIpHeader->fragOffset) & htons((unsigned short)0xFF1F) > 0) // (unsigned short)0xFF1F)일 경우 11111111 00011111
